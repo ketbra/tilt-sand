@@ -42,7 +42,7 @@
         const errorMessage = document.getElementById('error-message');
 
         // --- Configuration ---
-        const NUM_PARTICLES = 1200;
+        const NUM_PARTICLES = 4800; // Increased particle count
         const PARTICLE_RADIUS = 5; // Increased particle size
         const PARTICLE_FRICTION = 0.80; // How much velocity is lost on wall bounce
         const COLLISION_DAMPING = 0.98; // Energy kept after particle collision
@@ -198,9 +198,8 @@
             motionSensorWorking = true;
             const accel = event.accelerationIncludingGravity;
             if (accel && accel.x !== null && accel.y !== null) {
-                // The y-axis interpretation can vary between devices.
-                // Removed the negative sign to correct the gravity direction for devices where it was inverted.
-                gravity.x = accel.x * GRAVITY_SENSITIVITY;
+                // Inverting the x-axis to correct the swapped left/right directions.
+                gravity.x = -accel.x * GRAVITY_SENSITIVITY;
                 gravity.y = accel.y * GRAVITY_SENSITIVITY;
             }
         }
