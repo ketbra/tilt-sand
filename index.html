@@ -3,9 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Tilt Sand</title>
-  <link rel="manifest" href="data:application/manifest+json,{\"name\":\"Tilt Sand\",\"short_name\":\"Sand\",\"start_url\":\".\",\"display\":\"standalone\",\"background_color\":\"#000\",\"theme_color\":\"#000\",\"icons\":[{\"src\":\"data:image/png;base64,iVBORw0KGgo=\",\"sizes\":\"192x192\",\"type\":\"image/png\"}]}"/>
-  <style>
+  <title>Tilt Sand</title>  <style>
     :root { --ui: rgba(20,20,24,.9); --accent: #8be9fd; --text: #e6e6e6; }
     html, body { height: 100%; margin: 0; background:#000; color: var(--text); font: 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
     canvas { display:block; width:100vw; height:100vh; touch-action:none; }
@@ -55,6 +53,8 @@
 
   // Grid resolution chosen for mobile performance
   let W = 0, H = 0, SCALE = 0, grid, next, palette;
+  // Pixel buffer & offscreen canvas for scaling
+  let img, pc, pctx;
   const MAX_COLORS = 64; // palette size
 
   const rand = (a,b)=>a+Math.random()*(b-a);
@@ -76,6 +76,12 @@
 
     grid = new Uint16Array(W*H);
     next = new Uint16Array(W*H);
+
+    // prepare offscreen buffer and image data at grid resolution
+    pc = document.createElement('canvas');
+    pc.width = W; pc.height = H;
+    pctx = pc.getContext('2d');
+    img = pctx.createImageData(W, H);
 
     ctx.imageSmoothingEnabled = false;
     draw();
@@ -280,13 +286,19 @@
   }
 
   // Render grid to canvas
-  const img = new ImageData(W, H);
   function draw(){
-    if(img.width !== W || img.height !== H){
-      // recreate if resized
-      const d = ctx.createImageData(W,H);
-      img.data.set(d.data); // just replace dimensions
+    if(!img || !pc){ return; }
+    // Write pixels into ImageData via u32 view
+    const buf = new Uint32Array(img.data.buffer);
+    const pal = palette;
+    for(let i=0;i<grid.length;i++){
+      buf[i] = pal[grid[i]] || 0xFF000000; // opaque black for empty
     }
+    pctx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(pc, 0, 0, canvas.width, canvas.height);
+  }
     const buf = new Uint32Array(img.data.buffer);
     const pal = palette;
     for(let i=0;i<grid.length;i++){
