@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Tilt Sand</title>
+  <link rel="manifest" href="data:application/manifest+json,{\"name\":\"Tilt Sand\",\"short_name\":\"Sand\",\"start_url\":\".\",\"display\":\"standalone\",\"background_color\":\"#000\",\"theme_color\":\"#000\",\"icons\":[{\"src\":\"data:image/png;base64,iVBORw0KGgo=\",\"sizes\":\"192x192\",\"type\":\"image/png\"}]}"/>
+  <style>
+    :root { --ui: rgba(20,20,24,.9); --accent: #8be9fd; --text: #e6e6e6; }
+    html, body { height: 100%; margin: 0; background:#000; color: var(--text); font: 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    canvas { display:block; width:100vw; height:100vh; touch-action:none; }
+    #hud { position:fixed; left:0; right:0; bottom:0; padding:8px 10px; display:flex; gap:8px; align-items:center; background: var(--ui); backdrop-filter: blur(6px); }
+    #hud > * { flex: 0 0 auto; }
+    #btn { padding:8px 12px; border-radius:12px; border:1px solid #333; color:#111; background:linear-gradient(180deg,#fff,#c8c8c8); font-weight:700; }
+    #btn.run { background:linear-gradient(180deg,#b7f3ff,#77d4ff); }
+    .row { display:flex; gap:8px; align-items:center; }
+    input[type=range] { width:120px; }
+    .pill { padding:6px 10px; border-radius:999px; border:1px solid #3a3a3a; background:#111; color:#ddd; }
+    #toast { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:var(--ui); padding:8px 12px; border-radius:10px; opacity:0; transition:opacity .25s; }
+    #legend { position:fixed; top:8px; left:8px; background:var(--ui); padding:6px 8px; border-radius:10px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="legend">Tilt to flow. Tap to pour sand. Two-finger tap to erase. Pinch to change brush. Double-tap to shuffle colors.</div>
+  <div id="hud">
+    <button id="btn">Start</button>
+    <div class="row">
+      <label>Brush</label>
+      <input id="brush" type="range" min="1" max="28" value="8">
+    </div>
+    <div class="row">
+      <label>Spawn</label>
+      <select id="mode" class="pill">
+        <option value="rainbow" selected>Rainbow</option>
+        <option value="single">Single</option>
+        <option value="random">Random</option>
+      </select>
+    </div>
+    <button class="pill" id="cal">Calibrate</button>
+    <button class="pill" id="clear">Clear</button>
+  </div>
+  <div id="toast"></div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha:false, desynchronized:true });
+  const startBtn = document.getElementById('btn');
+  const brush = document.getElementById('brush');
+  const modeSel = document.getElementById('mode');
+  const clearBtn = document.getElementById('clear');
+  const calBtn = document.getElementById('cal');
+  const toast = document.getElementById('toast');
+
+  // Grid resolution chosen for mobile performance
+  let W = 0, H = 0, SCALE = 0, grid, next, palette;
+  const MAX_COLORS = 64; // palette size
+
+  const rand = (a,b)=>a+Math.random()*(b-a);
+
+  function show(msg, ms=1500){
+    toast.textContent = msg; toast.style.opacity=1; clearTimeout(show.t);
+    show.t = setTimeout(()=>toast.style.opacity=0, ms);
+  }
+
+  function resize(){
+    const dpr = Math.min(2, window.devicePixelRatio||1);
+    canvas.width = Math.floor(innerWidth * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
+
+    // Choose cell size so we have ~150k cells max
+    SCALE = Math.max(4, Math.floor(Math.sqrt((canvas.width*canvas.height)/150000)));
+    W = Math.floor(canvas.width / SCALE);
+    H = Math.floor(canvas.height / SCALE);
+
+    grid = new Uint16Array(W*H);
+    next = new Uint16Array(W*H);
+
+    ctx.imageSmoothingEnabled = false;
+    draw();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function idx(x,y){ return y*W + x; }
+  function inb(x,y){ return x>=0 && y>=0 && x<W && y<H; }
+
+  // Palette: smooth rainbow
+  function makePalette(){
+    palette = new Uint32Array(MAX_COLORS+1); // 0 is empty
+    for(let i=1;i<=MAX_COLORS;i++){
+      const t = i/MAX_COLORS;
+      const rgb = hslToRgb(t, 1.0, 0.55);
+      palette[i] = (255<<24) | (rgb[2]<<16) | (rgb[1]<<8) | (rgb[0]);
+    }
+  }
+  function hslToRgb(h, s, l){
+    const a = s*Math.min(l,1-l);
+    const f = n => {
+      const k=(n+ h*12)%12;
+      return l - a*Math.max(-1, Math.min(k-3, Math.min(9-k,1)));
+    };
+    return [f(0),f(8),f(4)].map(v=>Math.round(v*255));
+  }
+  makePalette();
+
+  // Gravity from device, default down
+  let g = {x:0, y:1};
+  let gCal = {x:0, y:0};
+
+  function setGravity(ax, ay){
+    // apply calibration offset
+    const x = ax - gCal.x;
+    const y = ay - gCal.y;
+    const mag = Math.hypot(x,y) || 1;
+    g.x = x/mag; g.y = y/mag;
+  }
+
+  calBtn.addEventListener('click', ()=>{
+    gCal = {...rawG};
+    show('Calibrated');
+  });
+
+  clearBtn.addEventListener('click', ()=>{
+    grid.fill(0); next.fill(0); draw();
+  });
+
+  // Touch input to add sand
+  let brushR = parseInt(brush.value,10);
+  brush.addEventListener('input', ()=> brushR = parseInt(brush.value,10));
+
+  let painting = false;
+  let lastTouches = [];
+
+  function addSand(cx, cy, radius){
+    const cxg = Math.floor(cx / SCALE), cyg = Math.floor(cy / SCALE);
+    const r = Math.max(1, Math.floor(radius / SCALE));
+    const colMode = modeSel.value;
+    for(let y=-r;y<=r;y++){
+      for(let x=-r;x<=r;x++){
+        if(x*x+y*y<=r*r){
+          const gx = cxg + x, gy = cyg + y;
+          if(inb(gx,gy)){
+            let val = 1;
+            if(colMode==='rainbow'){
+              // map to angle so each blob has gradient
+              const angle = Math.atan2(y,x);
+              val = 1 + (Math.floor(((angle+Math.PI)/(2*Math.PI))*MAX_COLORS) % MAX_COLORS);
+            } else if(colMode==='random'){
+              val = 1 + (Math.random()*MAX_COLORS|0);
+            } else { // single
+              val = MAX_COLORS>>1;
+            }
+            grid[idx(gx,gy)] = val;
+          }
+        }
+      }
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (e)=>{
+    painting = true; lastTouches = [{x:e.clientX*devicePixelRatio, y:e.clientY*devicePixelRatio}];
+    addSand(e.clientX*devicePixelRatio, e.clientY*devicePixelRatio, brushR*devicePixelRatio);
+  });
+  canvas.addEventListener('pointermove', (e)=>{
+    if(!painting) return;
+    const x = e.clientX*devicePixelRatio, y = e.clientY*devicePixelRatio;
+    addSand(x, y, brushR*devicePixelRatio);
+  });
+  window.addEventListener('pointerup', ()=> painting=false);
+
+  // Gesture helpers
+  let lastTap = 0;
+  canvas.addEventListener('touchstart', (e)=>{
+    if(e.touches.length===2){ grid.fill(0); show('Cleared'); }
+    if(e.touches.length===1){
+      const now = Date.now();
+      if(now - lastTap < 300){ shufflePalette(); show('Colors shuffled'); }
+      lastTap = now;
+    }
+    if(e.touches.length===2){
+      // pinch changes brush
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      canvas.dataset.pinch = Math.hypot(dx,dy);
+    }
+  }, {passive:true});
+  canvas.addEventListener('touchmove', (e)=>{
+    if(e.touches.length===2 && canvas.dataset.pinch){
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d = Math.hypot(dx,dy);
+      const base = parseFloat(canvas.dataset.pinch);
+      let v = Math.max(1, Math.min(28, Math.round(brushR * d/base)));
+      brushR = v; brush.value = v;
+    }
+  }, {passive:true});
+  canvas.addEventListener('touchend', ()=>{ canvas.dataset.pinch=''; }, {passive:true});
+
+  function shufflePalette(){
+    // rotate hues a bit
+    const off = Math.random();
+    for(let i=1;i<=MAX_COLORS;i++){
+      const t = (i/MAX_COLORS + off) % 1;
+      const rgb = hslToRgb(t, 1.0, 0.55);
+      palette[i] = (255<<24) | (rgb[2]<<16) | (rgb[1]<<8) | (rgb[0]);
+    }
+  }
+
+  // Physics step
+  let frameParity = false;
+  function step(){
+    // Map gravity to one of 8 directions
+    const angle = Math.atan2(g.y, g.x); // -PI..PI, x right, y down
+    // convert to 0..2PI with 0 pointing down for intuition
+    let a = angle + Math.PI/2; if(a<0) a += Math.PI*2;
+    const oct = Math.round(a / (Math.PI/4)) % 8;
+
+    // Direction vectors for the 8 octants, with primary move and two diagonals
+    const dirs = [
+      {p:[0,1], dl:[-1,1], dr:[1,1]},     // down
+      {p:[1,1], dl:[0,1], dr:[1,0]},      // down-right
+      {p:[1,0], dl:[1,1], dr:[1,-1]},     // right
+      {p:[1,-1], dl:[1,0], dr:[0,-1]},    // up-right
+      {p:[0,-1], dl:[1,-1], dr:[-1,-1]},  // up
+      {p:[-1,-1], dl:[-1,0], dr:[0,-1]},  // up-left
+      {p:[-1,0], dl:[-1,1], dr:[-1,-1]},  // left
+      {p:[-1,1], dl:[0,1], dr:[-1,0]},    // down-left
+    ][oct];
+
+    next.set(grid); // copy by default
+
+    // To reduce directional bias, sweep order alternates
+    const xStart = frameParity ? 0 : W-1;
+    const xEnd = frameParity ? W : -1;
+    const xStep = frameParity ? 1 : -1;
+
+    const yStart = frameParity ? H-1 : 0;
+    const yEnd = frameParity ? -1 : H;
+    const yStep = frameParity ? -1 : 1;
+
+    for(let y=yStart; y!==yEnd; y+=yStep){
+      for(let x=xStart; x!==xEnd; x+=xStep){
+        const i = idx(x,y);
+        const v = grid[i];
+        if(v===0) continue;
+        // try primary direction, then diagonals
+        const tryMove = (dx,dy)=>{
+          const nx = x+dx, ny = y+dy;
+          if(!inb(nx,ny)) return false;
+          const ni = idx(nx,ny);
+          if(grid[ni]===0 && next[ni]===grid[i]){ /* already moved something here this tick */ }
+          if(grid[ni]===0 && next[ni]===grid[i]){ /* no-op */ }
+          if(grid[ni]===0 && next[ni]===0){
+            next[ni] = v; next[i] = 0; return true;
+          }
+          return false;
+        };
+        if(tryMove(dirs.p[0], dirs.p[1])) continue;
+        // randomly prefer left or right diagonal to avoid streaks
+        if(Math.random()<0.5){
+          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
+          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
+        } else {
+          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
+          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
+        }
+        // slight horizontal creep along slope
+        if(Math.random()<0.1){
+          if(tryMove(dirs.dr[0], 0)) continue;
+          if(tryMove(dirs.dl[0], 0)) continue;
+        }
+      }
+    }
+
+    // swap
+    const tmp = grid; grid = next; next = tmp;
+    frameParity = !frameParity;
+  }
+
+  // Render grid to canvas
+  const img = new ImageData(W, H);
+  function draw(){
+    if(img.width !== W || img.height !== H){
+      // recreate if resized
+      const d = ctx.createImageData(W,H);
+      img.data.set(d.data); // just replace dimensions
+    }
+    const buf = new Uint32Array(img.data.buffer);
+    const pal = palette;
+    for(let i=0;i<grid.length;i++){
+      buf[i] = pal[grid[i]] || 0xFF000000;
+    }
+    // Resize to canvas with nearest-neighbor upscale
+    ctx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(canvas, 0,0,W,H, 0,0, canvas.width, canvas.height);
+  }
+
+  // Main loop
+  let running = false, rafId = 0;
+  function loop(){
+    step();
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  // Device motion handling
+  let rawG = {x:0,y:1};
+
+  async function startSensors(){
+    // Generic Sensor API first
+    if('Accelerometer' in window){
+      try {
+        const sensor = new Accelerometer({frequency:30});
+        sensor.addEventListener('reading', ()=>{
+          rawG.x = sensor.x; rawG.y = sensor.y;
+          // On most devices, +y is down; adjust if needed
+          setGravity(rawG.x, rawG.y);
+        });
+        sensor.start();
+        return true;
+      } catch(e){ console.log('Accelerometer failed', e); }
+    }
+
+    // Legacy DeviceMotion
+    if(typeof DeviceMotionEvent !== 'undefined'){
+      // iOS permission
+      if(typeof DeviceMotionEvent.requestPermission === 'function'){
+        const res = await DeviceMotionEvent.requestPermission();
+        if(res !== 'granted') throw new Error('Permission denied');
+      }
+      window.addEventListener('devicemotion', (e)=>{
+        const a = e.accelerationIncludingGravity || e.acceleration || {x:0,y:9.8};
+        // Map to screen coordinates. On many devices y increases toward the top. Flip if needed.
+        rawG.x = a.x||0; rawG.y = a.y||0;
+        setGravity(rawG.x, rawG.y);
+      });
+      return true;
+    }
+    throw new Error('No motion sensors available');
+  }
+
+  startBtn.addEventListener('click', async ()=>{
+    startBtn.textContent = 'Starting…';
+    try {
+      await startSensors();
+      if(!running){ running = true; loop(); }
+      startBtn.classList.add('run');
+      startBtn.textContent = 'Running';
+      show('Motion enabled');
+    } catch(e){
+      startBtn.textContent = 'Start';
+      show(e.message || 'Failed to start sensors');
+    }
+  });
+
+  // Seed a little sand so the screen is not empty
+  function seed(){
+    for(let i=0;i<6;i++){
+      addSand(rand(0, canvas.width), rand(0, canvas.height/2), rand(20, 60));
+    }
+    draw();
+  }
+  seed();
+
+})();
+</script>
+</body>
+</html>
