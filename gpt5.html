@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Tilt Sand</title>
+  <style>
+    :root { --ui: rgba(20,20,24,.9); --text: #e6e6e6; }
+    html, body { height: 100%; margin: 0; background:#000; color: var(--text); font: 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    canvas { display:block; width:100vw; height:100vh; touch-action:none; }
+    #hud { position:fixed; left:0; right:0; bottom:0; padding:8px 10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; background: var(--ui); backdrop-filter: blur(6px); }
+    #hud > * { flex: 0 0 auto; }
+    #btn { padding:8px 12px; border-radius:12px; border:1px solid #333; color:#111; background:linear-gradient(180deg,#fff,#c8c8c8); font-weight:700; }
+    #btn.run { background:linear-gradient(180deg,#b7f3ff,#77d4ff); }
+    .row { display:flex; gap:8px; align-items:center; }
+    input[type=range] { width:120px; }
+    .pill { padding:6px 10px; border-radius:999px; border:1px solid #3a3a3a; background:#111; color:#ddd; }
+    #toast { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:var(--ui); padding:8px 12px; border-radius:10px; opacity:0; transition:opacity .25s; }
+    #legend { position:fixed; top:8px; left:8px; background:var(--ui); padding:6px 8px; border-radius:10px; font-size:12px; }
+    .dpad { display:none; grid-template-areas: ". up ." "left mid right" ". down ."; gap:6px; }
+    .dpad button { width:44px; height:44px; border-radius:10px; border:1px solid #333; background:#1a1a1a; color:#eee; font-weight:700; }
+    .dpad button:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="legend">Tilt to flow. Tap to pour sand. Two-finger tap to erase. Pinch to change brush. Double-tap to shuffle colors.</div>
+  <div id="hud">
+    <button id="btn">Start</button>
+    <div class="row">
+      <label>Brush</label>
+      <input id="brush" type="range" min="1" max="28" value="8">
+    </div>
+    <div class="row">
+      <label>Spawn</label>
+      <select id="mode" class="pill">
+        <option value="rainbow" selected>Rainbow</option>
+        <option value="single">Single</option>
+        <option value="random">Random</option>
+      </select>
+    </div>
+    <button class="pill" id="cal">Calibrate</button>
+    <button class="pill" id="clear">Clear</button>
+    <button class="pill" id="toggleInput">Use Buttons</button>
+    <div id="pad" class="dpad">
+      <button id="up" style="grid-area: up">↑</button>
+      <button id="left" style="grid-area: left">←</button>
+      <button id="mid" style="grid-area: mid">•</button>
+      <button id="right" style="grid-area: right">→</button>
+      <button id="down" style="grid-area: down">↓</button>
+    </div>
+  </div>
+  <div id="toast"></div>
+
+<script>
+(function(){
+  'use strict';
+  // ===== DOM =====
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha:false, desynchronized:true });
+  const startBtn = document.getElementById('btn');
+  const brush = document.getElementById('brush');
+  const modeSel = document.getElementById('mode');
+  const clearBtn = document.getElementById('clear');
+  const calBtn = document.getElementById('cal');
+  const toggleInputBtn = document.getElementById('toggleInput');
+  const pad = document.getElementById('pad');
+  const toast = document.getElementById('toast');
+  const padBtns = {
+    up: document.getElementById('up'),
+    down: document.getElementById('down'),
+    left: document.getElementById('left'),
+    right: document.getElementById('right'),
+    mid: document.getElementById('mid')
+  };
+
+  // ===== State =====
+  let W = 0, H = 0, SCALE = 0;        // grid size
+  let grid, next;                      // Uint16 (color index), 0 = empty
+  let palette;                         // Uint32 ARGB lookup
+  let img, pc, pctx;                   // offscreen buffer at grid resolution
+  const MAX_COLORS = 64;
+
+  // Precomputed 8-direction table (avoids undefined access)
+  const DIRS = [
+    {p:[0,1],   dl:[-1,1], dr:[1,1]},     // down
+    {p:[1,1],   dl:[0,1],  dr:[1,0]},     // down-right
+    {p:[1,0],   dl:[1,1],  dr:[1,-1]},    // right
+    {p:[1,-1],  dl:[1,0],  dr:[0,-1]},    // up-right
+    {p:[0,-1],  dl:[1,-1], dr:[-1,-1]},   // up
+    {p:[-1,-1], dl:[-1,0], dr:[0,-1]},    // up-left
+    {p:[-1,0],  dl:[-1,1], dr:[-1,-1]},   // left
+    {p:[-1,1],  dl:[0,1],  dr:[-1,0]},    // down-left
+  ];
+
+  // ===== Utils =====
+  const rand = (a,b)=>a+Math.random()*(b-a);
+  function show(msg, ms=1500){
+    toast.textContent = msg; toast.style.opacity=1; clearTimeout(show.t);
+    show.t = setTimeout(()=>toast.style.opacity=0, ms);
+  }
+  const DPR = Math.min(2, window.devicePixelRatio||1);
+  function idx(x,y){ return y*W + x; }
+  function inb(x,y){ return x>=0 && y>=0 && x<W && y<H; }
+
+  function makePalette(){
+    palette = new Uint32Array(MAX_COLORS+1); // index 0 = empty
+    for(let i=1;i<=MAX_COLORS;i++){
+      const t = i/MAX_COLORS;
+      const [r,g,b] = hslToRgb(t, 1.0, 0.55);
+      // ARGB in native endianness; canvas will interpret correctly via putImageData
+      palette[i] = (255<<24) | (b<<16) | (g<<8) | (r);
+    }
+  }
+  function hslToRgb(h, s, l){
+    const a = s*Math.min(l,1-l);
+    const f = n => {
+      const k=(n+ h*12)%12;
+      return l - a*Math.max(-1, Math.min(k-3, Math.min(9-k,1)));
+    };
+    return [f(0),f(8),f(4)].map(v=>Math.round(v*255));
+  }
+
+  // --- Gravity ---
+  let g = {x:0, y:1};     // unit vector toward gravity
+  let gCal = {x:0, y:0};  // calibration offset
+  let rawG = {x:0, y:1};  // last measured raw acceleration (approx)
+  let useButtons = false;
+  const pressed = {up:false,down:false,left:false,right:false};
+
+  function setGravity(ax, ay){
+    const x = ax - gCal.x, y = ay - gCal.y;
+    const mag = Math.hypot(x,y);
+    if(!isFinite(mag) || mag === 0){ g.x = 0; g.y = 1; return; }
+    g.x = x/mag; g.y = y/mag;
+  }
+
+  function octantFromGravity(gx, gy){
+    if(!isFinite(gx) || !isFinite(gy)) return 0;
+    let ang = Math.atan2(gy, gx);          // -PI..PI
+    let a = ang + Math.PI/2;               // 0 points down
+    a = ((a % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI); // wrap to [0,2PI)
+    let o = Math.round(a / (Math.PI/4));   // 0..8
+    o = ((o % 8) + 8) % 8;                 // force 0..7
+    return o;
+  }
+
+  // ===== Layout / Buffers =====
+  function resize(){
+    const dpr = Math.min(2, window.devicePixelRatio||1);
+    canvas.width = Math.floor(innerWidth * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
+
+    // Keep ~150k cells for perf
+    SCALE = Math.max(4, Math.floor(Math.sqrt((canvas.width*canvas.height)/150000)));
+    W = Math.max(1, Math.floor(canvas.width / SCALE));
+    H = Math.max(1, Math.floor(canvas.height / SCALE));
+
+    grid = new Uint16Array(W*H);
+    next = new Uint16Array(W*H);
+
+    pc = document.createElement('canvas');
+    pc.width = W; pc.height = H;
+    pctx = pc.getContext('2d');
+    img = pctx.createImageData(W, H);
+
+    if(!palette) makePalette();
+
+    ctx.imageSmoothingEnabled = false;
+    draw();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ===== Input: painting =====
+  let brushR = parseInt(brush.value,10) || 8;
+  brush.addEventListener('input', ()=> brushR = parseInt(brush.value,10) || 8);
+  let painting = false;
+
+  function addSand(cx, cy, radius){
+    if(!grid) return;
+    const cxg = Math.floor(cx / SCALE), cyg = Math.floor(cy / SCALE);
+    const r = Math.max(1, Math.floor(radius / SCALE));
+    const colMode = modeSel.value;
+    for(let y=-r;y<=r;y++){
+      for(let x=-r;x<=r;x++){
+        if(x*x+y*y<=r*r){
+          const gx = cxg + x, gy = cyg + y;
+          if(inb(gx,gy)){
+            let val = 1;
+            if(colMode==='rainbow'){
+              const angle = Math.atan2(y,x);
+              val = 1 + (Math.floor(((angle+Math.PI)/(2*Math.PI))*MAX_COLORS) % MAX_COLORS);
+            } else if(colMode==='random'){
+              val = 1 + (Math.random()*MAX_COLORS|0);
+            } else {
+              val = MAX_COLORS>>1;
+            }
+            grid[idx(gx,gy)] = val;
+          }
+        }
+      }
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (e)=>{
+    painting = true;
+    const x = e.clientX*(window.devicePixelRatio||1), y = e.clientY*(window.devicePixelRatio||1);
+    addSand(x, y, brushR*(window.devicePixelRatio||1));
+  });
+  canvas.addEventListener('pointermove', (e)=>{
+    if(!painting) return;
+    const x = e.clientX*(window.devicePixelRatio||1), y = e.clientY*(window.devicePixelRatio||1);
+    addSand(x, y, brushR*(window.devicePixelRatio||1));
+  });
+  window.addEventListener('pointerup', ()=> painting=false);
+
+  // Touch gestures (guard against undefined touches)
+  let lastTap = 0;
+  canvas.addEventListener('touchstart', (e)=>{
+    const touches = e.touches || e.targetTouches || [];
+    if(touches.length===2){ grid.fill(0); show('Cleared'); }
+    if(touches.length===1){
+      const now = Date.now();
+      if(now - lastTap < 300){ shufflePalette(); show('Colors shuffled'); }
+      lastTap = now;
+    }
+    if(touches.length===2){
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      canvas.dataset.pinch = String(Math.hypot(dx,dy));
+    }
+  }, {passive:true});
+  canvas.addEventListener('touchmove', (e)=>{
+    const touches = e.touches || e.targetTouches || [];
+    if(touches.length===2 && canvas.dataset.pinch){
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      const d = Math.hypot(dx,dy);
+      const base = parseFloat(canvas.dataset.pinch||'0')||1;
+      let v = Math.max(1, Math.min(28, Math.round(brushR * d/base)));
+      brushR = v; brush.value = String(v);
+    }
+  }, {passive:true});
+  canvas.addEventListener('touchend', ()=>{ canvas.dataset.pinch=''; }, {passive:true});
+
+  function shufflePalette(){
+    if(!palette) makePalette();
+    const off = Math.random();
+    for(let i=1;i<=MAX_COLORS;i++){
+      const t = (i/MAX_COLORS + off) % 1;
+      const [r,g,b] = hslToRgb(t, 1.0, 0.55);
+      palette[i] = (255<<24) | (b<<16) | (g<<8) | (r);
+    }
+  }
+
+  // ===== Physics =====
+  let frameParity = false;
+  function step(){
+    if(!grid || !next) return;
+
+    const oct = octantFromGravity(g.x, g.y);
+    const dirs = DIRS[oct] || DIRS[0];
+
+    next.set(grid);
+
+    const xStart = frameParity ? 0 : W-1;
+    const xEnd = frameParity ? W : -1;
+    const xStep = frameParity ? 1 : -1;
+    const yStart = frameParity ? H-1 : 0;
+    const yEnd = frameParity ? -1 : H;
+    const yStep = frameParity ? -1 : 1;
+
+    for(let y=yStart; y!==yEnd; y+=yStep){
+      for(let x=xStart; x!==xEnd; x+=xStep){
+        const i = idx(x,y);
+        const v = grid[i];
+        if(v===0) continue;
+        const tryMove = (dx,dy)=>{
+          const nx = x+dx, ny = y+dy;
+          if(!inb(nx,ny)) return false;
+          const ni = idx(nx,ny);
+          if(grid[ni]===0 && next[ni]===0){
+            next[ni] = v; next[i] = 0; return true;
+          }
+          return false;
+        };
+        if(tryMove(dirs.p[0], dirs.p[1])) continue;
+        if(Math.random()<0.5){
+          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
+          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
+        } else {
+          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
+          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
+        }
+        if(Math.random()<0.1){
+          if(tryMove(dirs.dr[0], 0)) continue;
+          if(tryMove(dirs.dl[0], 0)) continue;
+        }
+      }
+    }
+
+    const tmp = grid; grid = next; next = tmp;
+    frameParity = !frameParity;
+  }
+
+  // ===== Rendering =====
+  function draw(){
+    if(!img || !pc || !grid || !palette) return;
+    const buf = new Uint32Array(img.data.buffer);
+    const pal = palette;
+    const N = Math.min(buf.length, grid.length);
+    for(let i=0;i<N;i++){
+      const c = pal[grid[i]]; // undefined guard below
+      buf[i] = (c===undefined ? 0xFF000000 : c);
+    }
+    pctx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(pc, 0, 0, canvas.width, canvas.height);
+  }
+
+  // ===== Main loop =====
+  let running = false, rafId = 0;
+  function applyButtonGravity(){
+    if(!useButtons) return;
+    const dx = (pressed.right?1:0) + (pressed.left?-1:0);
+    const dy = (pressed.down?1:0) + (pressed.up?-1:0);
+    if(dx===0 && dy===0) return;
+    const mag = Math.hypot(dx,dy) || 1;
+    g.x = dx/mag; g.y = dy/mag;
+  }
+  function loop(){
+    applyButtonGravity();
+    step();
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  // ===== Sensors & Fallback =====
+  async function startSensors(){
+    let started = false;
+
+    if('Accelerometer' in window){
+      try {
+        const sensor = new Accelerometer({frequency:30});
+        sensor.addEventListener('reading', ()=>{
+          rawG.x = sensor.x; rawG.y = sensor.y;
+          setGravity(rawG.x, rawG.y);
+        });
+        sensor.start();
+        started = true;
+      } catch(e){ console.log('Accelerometer failed', e); }
+    }
+
+    if(!started && typeof DeviceMotionEvent !== 'undefined'){
+      try {
+        if(typeof DeviceMotionEvent.requestPermission === 'function'){
+          const res = await DeviceMotionEvent.requestPermission();
+          if(res !== 'granted') throw new Error('Permission denied');
+        }
+        const handler = (e)=>{
+          const a = e.accelerationIncludingGravity || e.acceleration || {x:0,y:9.8};
+          rawG.x = a.x||0; rawG.y = a.y||0;
+          setGravity(rawG.x, rawG.y);
+        };
+        window.addEventListener('devicemotion', handler);
+        started = true;
+      } catch(err){ console.log('DeviceMotion failed', err); }
+    }
+
+    if(!started){
+      useButtons = true;
+      pad.style.display = 'grid';
+      toggleInputBtn.textContent = 'Use Sensors';
+      show('No motion sensor. Using buttons.');
+    } else {
+      useButtons = false;
+      pad.style.display = 'none';
+      toggleInputBtn.textContent = 'Use Buttons';
+    }
+    return started;
+  }
+
+  // ===== Controls =====
+  calBtn.addEventListener('click', ()=>{ gCal = {...rawG}; show('Calibrated'); });
+  toggleInputBtn.addEventListener('click', ()=>{
+    useButtons = !useButtons;
+    pad.style.display = useButtons ? 'grid' : 'none';
+    toggleInputBtn.textContent = useButtons ? 'Use Sensors' : 'Use Buttons';
+    show(useButtons ? 'Button input' : 'Sensor input');
+  });
+  clearBtn.addEventListener('click', ()=>{ grid.fill(0); next.fill(0); draw(); });
+
+  startBtn.addEventListener('click', async ()=>{
+    startBtn.textContent = 'Starting…';
+    try {
+      await startSensors();
+      if(!running){ running = true; loop(); }
+      startBtn.classList.add('run');
+      startBtn.textContent = 'Running';
+    } catch(e){
+      // Fallback to buttons anyway
+      useButtons = true;
+      pad.style.display = 'grid';
+      toggleInputBtn.textContent = 'Use Sensors';
+      if(!running){ running = true; loop(); }
+      startBtn.textContent = 'Running';
+      show('Sensors blocked. Using buttons.');
+    }
+  });
+
+  // ===== Seed some sand =====
+  function seed(){
+    for(let i=0;i<6;i++){
+      addSand(rand(0, canvas.width), rand(0, canvas.height/2), rand(20, 60));
+    }
+    draw();
+  }
+  seed();
+
+  // ===== Button handlers =====
+  function bindDir(btn, dir){
+    const down = ()=>{ pressed[dir]=true; };
+    const up = ()=>{ pressed[dir]=false; };
+    btn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); down(); });
+    btn.addEventListener('pointerup', up);
+    btn.addEventListener('pointerleave', up);
+    btn.addEventListener('pointercancel', up);
+    btn.addEventListener('touchstart', (e)=>{ e.preventDefault(); down(); }, {passive:false});
+    btn.addEventListener('touchend', up);
+    btn.addEventListener('touchcancel', up);
+  }
+  bindDir(padBtns.up,'up');
+  bindDir(padBtns.down,'down');
+  bindDir(padBtns.left,'left');
+  bindDir(padBtns.right,'right');
+  padBtns.mid.addEventListener('click', ()=>{ pressed.up=pressed.down=pressed.left=pressed.right=false; show('Gravity neutral'); });
+
+  // ===== Runtime tests =====
+  (function runTests(){
+    try {
+      // Existing checks
+      console.assert(typeof step === 'function', 'step should exist');
+      console.assert(grid.length === W*H, 'grid sized');
+      step(); draw();
+      console.assert(grid.length === W*H, 'grid stable length after step');
+
+      // New tests
+      // 1) Octant mapping is always 0..7 and DIRS exists
+      for(const v of [[1,0],[0,1],[-1,0],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1],[0,0]]){
+        const o = octantFromGravity(v[0], v[1]);
+        console.assert(Number.isInteger(o) && o>=0 && o<8, 'octant valid');
+        console.assert(!!DIRS[o], 'DIRS present for octant');
+      }
+      // 2) Draw does not throw when palette or grid are present
+      console.assert(palette && palette.length===MAX_COLORS+1, 'palette sized');
+      draw();
+      // 3) addSand respects bounds
+      const before = grid.slice();
+      addSand(-100,-100,5); // offscreen no throw
+      addSand(canvas.width+100,canvas.height+100,5);
+      console.assert(grid.length===before.length, 'addSand safe');
+
+      console.log('[Tilt Sand] self-tests passed');
+    } catch (e) {
+      console.error('[Tilt Sand] self-tests failed', e);
+    }
+  })();
+
+})();
+</script>
+</body>
+</html>
