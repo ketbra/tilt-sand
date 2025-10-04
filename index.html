@@ -15,6 +15,37 @@
             display: block;
             background-color: #111827; /* bg-gray-900 */
         }
+        /* Custom styles for range sliders */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #4a5568; /* gray-700 */
+            border-radius: 5px;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+        }
+        input[type="range"]:hover {
+            opacity: 1;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #6366f1; /* indigo-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #6366f1; /* indigo-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
     </style>
 </head>
 <body class="overflow-hidden m-0 p-0">
@@ -22,7 +53,49 @@
     <!-- Permission overlay -->
     <div id="permission-overlay" class="fixed inset-0 z-10 flex flex-col items-center justify-center bg-gray-900 bg-opacity-95 text-center p-4">
         <h1 class="text-4xl font-bold text-white mb-4">Colorful Sand</h1>
-        <p id="info-text" class="text-lg text-gray-300 mb-8 max-w-md">This interactive page uses your device's motion sensors to simulate falling sand. Please grant permission to access the accelerometer.</p>
+        <p id="info-text" class="text-lg text-gray-300 mb-6 max-w-md">Use the settings below to customize the simulation, then grant permission to begin.</p>
+        
+        <!-- Settings Panel -->
+        <div id="settings-panel" class="w-full max-w-sm bg-gray-800 p-6 rounded-lg shadow-xl text-white mb-8 space-y-4">
+            <!-- Gravity Setting -->
+            <div class="setting-item">
+                <div class="flex justify-between items-center mb-1">
+                    <label for="gravity-slider" class="font-medium">Gravity</label>
+                    <span id="gravity-value" class="text-sm text-indigo-300">0.15</span>
+                </div>
+                <input id="gravity-slider" type="range" min="0" max="50" value="15">
+            </div>
+            <!-- Bounciness Setting -->
+            <div class="setting-item">
+                <div class="flex justify-between items-center mb-1">
+                    <label for="bounciness-slider" class="font-medium">Bounciness</label>
+                    <span id="bounciness-value" class="text-sm text-indigo-300">0.80</span>
+                </div>
+                <input id="bounciness-slider" type="range" min="0" max="100" value="80">
+            </div>
+             <!-- Particle Size Setting -->
+             <div class="setting-item">
+                <div class="flex justify-between items-center mb-1">
+                    <label for="size-slider" class="font-medium">Particle Size</label>
+                    <span id="size-value" class="text-sm text-indigo-300">5</span>
+                </div>
+                <input id="size-slider" type="range" min="1" max="15" value="5">
+            </div>
+             <!-- Particle Count Setting -->
+             <div class="setting-item">
+                <div class="flex justify-between items-center mb-1">
+                    <label for="count-slider" class="font-medium">Particle Count</label>
+                    <span id="count-value" class="text-sm text-indigo-300">4800</span>
+                </div>
+                <input id="count-slider" type="range" min="500" max="10000" step="100" value="4800">
+            </div>
+            <!-- Tap to Add Setting -->
+            <div class="flex items-center justify-center pt-2">
+                 <input id="tap-to-add-checkbox" type="checkbox" class="h-5 w-5 rounded bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500">
+                 <label for="tap-to-add-checkbox" class="ml-3 font-medium">Enable "Tap to Add"</label>
+            </div>
+        </div>
+
         <button id="permission-button" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
             Start Simulation
         </button>
@@ -40,60 +113,64 @@
         const permissionButton = document.getElementById('permission-button');
         const infoText = document.getElementById('info-text');
         const errorMessage = document.getElementById('error-message');
+        
+        // --- Settings Elements ---
+        const gravitySlider = document.getElementById('gravity-slider');
+        const bouncinessSlider = document.getElementById('bounciness-slider');
+        const sizeSlider = document.getElementById('size-slider');
+        const countSlider = document.getElementById('count-slider');
+        const tapToAddCheckbox = document.getElementById('tap-to-add-checkbox');
+
+        const gravityValue = document.getElementById('gravity-value');
+        const bouncinessValue = document.getElementById('bounciness-value');
+        const sizeValue = document.getElementById('size-value');
+        const countValue = document.getElementById('count-value');
 
         // --- Configuration ---
-        const NUM_PARTICLES = 4800; // Increased particle count
-        const PARTICLE_RADIUS = 5; // Increased particle size
-        const PARTICLE_FRICTION = 0.80; // How much velocity is lost on wall bounce
-        const COLLISION_DAMPING = 0.98; // Energy kept after particle collision
-        const GRAVITY_SENSITIVITY = 0.15; // Lowered gravity effect
+        let NUM_PARTICLES = 4800;
+        let PARTICLE_RADIUS = 5;
+        let PARTICLE_FRICTION = 0.80;
+        let COLLISION_DAMPING = 0.98;
+        let GRAVITY_SENSITIVITY = 0.15;
+        let tapToAddEnabled = false;
+
         const SAND_COLORS = ['#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a', '#fefae0', '#dda15e'];
-        const CELL_SIZE = PARTICLE_RADIUS * 2.5; // For collision optimization grid
+        let CELL_SIZE = PARTICLE_RADIUS * 2.5;
 
         // --- State ---
         let particles = [];
-        let gravity = { x: 0, y: 0.4 }; // Lowered default gravity
+        let gravity = { x: 0, y: 0.4 };
         let motionSensorWorking = false;
         let grid = [];
         let numCols, numRows;
 
+        // --- Event Listeners for Settings ---
+        gravitySlider.addEventListener('input', () => gravityValue.textContent = (gravitySlider.value / 100).toFixed(2));
+        bouncinessSlider.addEventListener('input', () => bouncinessValue.textContent = (bouncinessSlider.value / 100).toFixed(2));
+        sizeSlider.addEventListener('input', () => sizeValue.textContent = sizeSlider.value);
+        countSlider.addEventListener('input', () => countValue.textContent = countSlider.value);
+
         // --- Particle Class ---
         class Particle {
-            constructor(x, y, color) {
+            constructor(x, y, color, vx = (Math.random() - 0.5) * 2, vy = (Math.random() - 0.5) * 2) {
                 this.x = x;
                 this.y = y;
-                this.radius = PARTICLE_RADIUS * (0.8 + Math.random() * 0.4); // slight size variation
+                this.radius = PARTICLE_RADIUS * (0.8 + Math.random() * 0.4);
                 this.color = color;
-                this.vx = (Math.random() - 0.5) * 2;
-                this.vy = (Math.random() - 0.5) * 2;
+                this.vx = vx;
+                this.vy = vy;
             }
 
             update() {
-                // Apply gravity
                 this.vy += gravity.y;
                 this.vx += gravity.x;
-
-                // Update position
                 this.x += this.vx;
                 this.y += this.vy;
 
-                // Wall collision detection and response
-                if (this.x + this.radius > canvas.width) {
-                    this.x = canvas.width - this.radius;
-                    this.vx *= -PARTICLE_FRICTION;
-                }
-                if (this.x - this.radius < 0) {
-                    this.x = this.radius;
-                    this.vx *= -PARTICLE_FRICTION;
-                }
-                if (this.y + this.radius > canvas.height) {
-                    this.y = canvas.height - this.radius;
-                    this.vy *= -PARTICLE_FRICTION;
-                }
-                if (this.y - this.radius < 0) {
-                    this.y = this.radius;
-                    this.vy *= -PARTICLE_FRICTION;
-                }
+                if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx *= -PARTICLE_FRICTION; }
+                if (this.x - this.radius < 0) { this.x = this.radius; this.vx *= -PARTICLE_FRICTION; }
+                if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy *= -PARTICLE_FRICTION; }
+                if (this.y - this.radius < 0) { this.y = this.radius; this.vy *= -PARTICLE_FRICTION; }
             }
 
             draw() {
@@ -108,41 +185,27 @@
         function resolveCollisionsForParticle(p1) {
             const p1col = Math.floor(p1.x / CELL_SIZE);
             const p1row = Math.floor(p1.y / CELL_SIZE);
-
-            // Check current cell and 8 neighbors
             for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
                 for (let colOffset = -1; colOffset <= 1; colOffset++) {
                     const checkCol = p1col + colOffset;
                     const checkRow = p1row + rowOffset;
-
                     if (checkCol >= 0 && checkCol < numCols && checkRow >= 0 && checkRow < numRows) {
                         const index = checkRow * numCols + checkCol;
                         for (const p2 of grid[index]) {
                             if (p1 === p2) continue;
-
                             const dx = p2.x - p1.x;
                             const dy = p2.y - p1.y;
                             const distSq = dx * dx + dy * dy;
                             const radiiSum = p1.radius + p2.radius;
-
-                            if (distSq < radiiSum * radiiSum) {
+                            if (distSq < radiiSum * radiiSum && distSq > 0) {
                                 const dist = Math.sqrt(distSq);
-                                const overlap = radiiSum - dist;
-                                const angle = Math.atan2(dy, dx);
-                                
-                                const moveX = (overlap / 2) * Math.cos(angle);
-                                const moveY = (overlap / 2) * Math.sin(angle);
-
-                                p1.x -= moveX;
-                                p1.y -= moveY;
-                                p2.x += moveX;
-                                p2.y += moveY;
-
-                                // Dampen velocities to simulate inelastic collision
-                                p1.vx *= COLLISION_DAMPING;
-                                p1.vy *= COLLISION_DAMPING;
-                                p2.vx *= COLLISION_DAMPING;
-                                p2.vy *= COLLISION_DAMPING;
+                                const overlap = (radiiSum - dist) / dist;
+                                const moveX = dx * 0.5 * overlap;
+                                const moveY = dy * 0.5 * overlap;
+                                p1.x -= moveX; p1.y -= moveY;
+                                p2.x += moveX; p2.y += moveY;
+                                p1.vx *= COLLISION_DAMPING; p1.vy *= COLLISION_DAMPING;
+                                p2.vx *= COLLISION_DAMPING; p2.vy *= COLLISION_DAMPING;
                             }
                         }
                     }
@@ -162,7 +225,6 @@
         function initParticles() {
             particles = [];
             for (let i = 0; i < NUM_PARTICLES; i++) {
-                // Start particles in a cluster at the top center to let them fall into a pile
                 const x = canvas.width / 2 + (Math.random() - 0.5) * 80;
                 const y = Math.random() * 100;
                 const color = SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)];
@@ -170,27 +232,29 @@
             }
         }
 
+        function addParticlesAt(x, y) {
+            const clumpSize = 20 + Math.random() * 30;
+            for(let i=0; i < clumpSize; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 4;
+                const vx = Math.cos(angle) * speed;
+                const vy = Math.sin(angle) * speed;
+                const color = SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)];
+                particles.push(new Particle(x, y, color, vx, vy));
+            }
+        }
+
         function animate() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            // Populate the spatial grid for collision optimization
             grid = Array(numRows * numCols).fill(null).map(() => []);
             for (const particle of particles) {
                 const col = Math.floor(particle.x / CELL_SIZE);
                 const row = Math.floor(particle.y / CELL_SIZE);
                 if (col >= 0 && col < numCols && row >= 0 && row < numRows) {
-                    const index = row * numCols + col;
-                    grid[index].push(particle);
+                    grid[row * numCols + col].push(particle);
                 }
             }
-
-            // Update, check collisions, and draw each particle
-            particles.forEach(p => {
-                resolveCollisionsForParticle(p);
-                p.update();
-                p.draw();
-            });
-
+            particles.forEach(p => { resolveCollisionsForParticle(p); p.update(); p.draw(); });
             requestAnimationFrame(animate);
         }
 
@@ -198,28 +262,31 @@
             motionSensorWorking = true;
             const accel = event.accelerationIncludingGravity;
             if (accel && accel.x !== null && accel.y !== null) {
-                // Inverting the x-axis to correct the swapped left/right directions.
                 gravity.x = -accel.x * GRAVITY_SENSITIVITY;
                 gravity.y = accel.y * GRAVITY_SENSITIVITY;
             }
         }
 
         function start() {
+            // Apply settings from sliders
+            GRAVITY_SENSITIVITY = parseFloat(gravitySlider.value) / 100;
+            const bounciness = parseFloat(bouncinessSlider.value) / 100;
+            PARTICLE_FRICTION = bounciness;
+            COLLISION_DAMPING = 0.90 + (bounciness * 0.09); // Map to stable range
+            PARTICLE_RADIUS = parseInt(sizeSlider.value, 10);
+            NUM_PARTICLES = parseInt(countSlider.value, 10);
+            tapToAddEnabled = tapToAddCheckbox.checked;
+            CELL_SIZE = PARTICLE_RADIUS * 2.5;
+
             if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-                DeviceMotionEvent.requestPermission()
-                    .then(permissionState => {
-                        if (permissionState === 'granted') {
-                            initializeSimulation();
-                        } else {
-                           errorMessage.textContent = 'Permission denied. Please refresh and grant permission to start.';
-                           errorMessage.classList.remove('hidden');
-                        }
-                    })
-                    .catch((error) => {
-                        console.error(error);
-                        errorMessage.textContent = 'An error occurred while requesting permission.';
-                        errorMessage.classList.remove('hidden');
-                    });
+                DeviceMotionEvent.requestPermission().then(state => {
+                    if (state === 'granted') initializeSimulation();
+                    else { errorMessage.textContent = 'Permission denied.'; errorMessage.classList.remove('hidden'); }
+                }).catch(err => {
+                    console.error(err);
+                    errorMessage.textContent = 'Error requesting permission.';
+                    errorMessage.classList.remove('hidden');
+                });
             } else {
                 initializeSimulation();
             }
@@ -227,26 +294,26 @@
 
         function initializeSimulation() {
             permissionOverlay.classList.add('hidden');
+            if (tapToAddEnabled) {
+                canvas.addEventListener('pointerdown', (e) => addParticlesAt(e.clientX, e.clientY));
+            }
             window.addEventListener('devicemotion', handleMotionEvent, true);
             window.addEventListener('resize', resizeCanvas);
             resizeCanvas();
             animate();
 
-            // Check if the sensor is actually working after a short delay
             setTimeout(() => {
                 if (!motionSensorWorking) {
                     permissionOverlay.classList.remove('hidden');
                     permissionButton.classList.add('hidden');
                     infoText.textContent = "Could not detect motion sensors. The simulation will use default gravity."
-                    errorMessage.textContent = 'Your device may not have an accelerometer, or your browser requires a secure (https) connection to access it.';
+                    errorMessage.textContent = 'Your device may not have an accelerometer, or requires a secure (https) connection.';
                     errorMessage.classList.remove('hidden');
                 }
             }, 1500);
         }
 
-        // --- Event Listeners ---
         permissionButton.addEventListener('click', start);
-
     </script>
 </body>
 </html>
