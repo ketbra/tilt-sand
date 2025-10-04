@@ -1,383 +1,252 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Tilt Sand</title>  <style>
-    :root { --ui: rgba(20,20,24,.9); --accent: #8be9fd; --text: #e6e6e6; }
-    html, body { height: 100%; margin: 0; background:#000; color: var(--text); font: 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    canvas { display:block; width:100vw; height:100vh; touch-action:none; }
-    #hud { position:fixed; left:0; right:0; bottom:0; padding:8px 10px; display:flex; gap:8px; align-items:center; background: var(--ui); backdrop-filter: blur(6px); }
-    #hud > * { flex: 0 0 auto; }
-    #btn { padding:8px 12px; border-radius:12px; border:1px solid #333; color:#111; background:linear-gradient(180deg,#fff,#c8c8c8); font-weight:700; }
-    #btn.run { background:linear-gradient(180deg,#b7f3ff,#77d4ff); }
-    .row { display:flex; gap:8px; align-items:center; }
-    input[type=range] { width:120px; }
-    .pill { padding:6px 10px; border-radius:999px; border:1px solid #3a3a3a; background:#111; color:#ddd; }
-    #toast { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:var(--ui); padding:8px 12px; border-radius:10px; opacity:0; transition:opacity .25s; }
-    #legend { position:fixed; top:8px; left:8px; background:var(--ui); padding:6px 8px; border-radius:10px; font-size:12px; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Accelerometer Sand</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Prevents pull-to-refresh and other touch gestures from interfering */
+        body {
+            overscroll-behavior: none;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            background-color: #111827; /* bg-gray-900 */
+        }
+    </style>
 </head>
-<body>
-  <canvas id="c"></canvas>
-  <div id="legend">Tilt to flow. Tap to pour sand. Two-finger tap to erase. Pinch to change brush. Double-tap to shuffle colors.</div>
-  <div id="hud">
-    <button id="btn">Start</button>
-    <div class="row">
-      <label>Brush</label>
-      <input id="brush" type="range" min="1" max="28" value="8">
+<body class="overflow-hidden m-0 p-0">
+
+    <!-- Permission overlay -->
+    <div id="permission-overlay" class="fixed inset-0 z-10 flex flex-col items-center justify-center bg-gray-900 bg-opacity-95 text-center p-4">
+        <h1 class="text-4xl font-bold text-white mb-4">Colorful Sand</h1>
+        <p id="info-text" class="text-lg text-gray-300 mb-8 max-w-md">This interactive page uses your device's motion sensors to simulate falling sand. Please grant permission to access the accelerometer.</p>
+        <button id="permission-button" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
+            Start Simulation
+        </button>
+        <p id="error-message" class="text-red-400 mt-4 hidden"></p>
     </div>
-    <div class="row">
-      <label>Spawn</label>
-      <select id="mode" class="pill">
-        <option value="rainbow" selected>Rainbow</option>
-        <option value="single">Single</option>
-        <option value="random">Random</option>
-      </select>
-    </div>
-    <button class="pill" id="cal">Calibrate</button>
-    <button class="pill" id="clear">Clear</button>
-  </div>
-  <div id="toast"></div>
 
-<script>
-(function(){
-  const canvas = document.getElementById('c');
-  const ctx = canvas.getContext('2d', { alpha:false, desynchronized:true });
-  const startBtn = document.getElementById('btn');
-  const brush = document.getElementById('brush');
-  const modeSel = document.getElementById('mode');
-  const clearBtn = document.getElementById('clear');
-  const calBtn = document.getElementById('cal');
-  const toast = document.getElementById('toast');
+    <!-- The canvas where the sand will be drawn -->
+    <canvas id="sand-canvas"></canvas>
 
-  // Grid resolution chosen for mobile performance
-  let W = 0, H = 0, SCALE = 0, grid, next, palette;
-  // Pixel buffer & offscreen canvas for scaling
-  let img, pc, pctx;
-  const MAX_COLORS = 64; // palette size
+    <script>
+        // --- DOM Elements ---
+        const canvas = document.getElementById('sand-canvas');
+        const ctx = canvas.getContext('2d');
+        const permissionOverlay = document.getElementById('permission-overlay');
+        const permissionButton = document.getElementById('permission-button');
+        const infoText = document.getElementById('info-text');
+        const errorMessage = document.getElementById('error-message');
 
-  const rand = (a,b)=>a+Math.random()*(b-a);
+        // --- Configuration ---
+        const NUM_PARTICLES = 1200;
+        const PARTICLE_RADIUS = 3;
+        const PARTICLE_FRICTION = 0.80; // How much velocity is lost on wall bounce
+        const COLLISION_DAMPING = 0.98; // Energy kept after particle collision
+        const GRAVITY_SENSITIVITY = 0.35; // How strongly the accelerometer affects gravity
+        const SAND_COLORS = ['#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a', '#fefae0', '#dda15e'];
+        const CELL_SIZE = PARTICLE_RADIUS * 2.5; // For collision optimization grid
 
-  function show(msg, ms=1500){
-    toast.textContent = msg; toast.style.opacity=1; clearTimeout(show.t);
-    show.t = setTimeout(()=>toast.style.opacity=0, ms);
-  }
+        // --- State ---
+        let particles = [];
+        let gravity = { x: 0, y: 1 };
+        let motionSensorWorking = false;
+        let grid = [];
+        let numCols, numRows;
 
-  function resize(){
-    const dpr = Math.min(2, window.devicePixelRatio||1);
-    canvas.width = Math.floor(innerWidth * dpr);
-    canvas.height = Math.floor(innerHeight * dpr);
-
-    // Choose cell size so we have ~150k cells max
-    SCALE = Math.max(4, Math.floor(Math.sqrt((canvas.width*canvas.height)/150000)));
-    W = Math.floor(canvas.width / SCALE);
-    H = Math.floor(canvas.height / SCALE);
-
-    grid = new Uint16Array(W*H);
-    next = new Uint16Array(W*H);
-
-    // prepare offscreen buffer and image data at grid resolution
-    pc = document.createElement('canvas');
-    pc.width = W; pc.height = H;
-    pctx = pc.getContext('2d');
-    img = pctx.createImageData(W, H);
-
-    ctx.imageSmoothingEnabled = false;
-    draw();
-  }
-  window.addEventListener('resize', resize);
-  resize();
-
-  function idx(x,y){ return y*W + x; }
-  function inb(x,y){ return x>=0 && y>=0 && x<W && y<H; }
-
-  // Palette: smooth rainbow
-  function makePalette(){
-    palette = new Uint32Array(MAX_COLORS+1); // 0 is empty
-    for(let i=1;i<=MAX_COLORS;i++){
-      const t = i/MAX_COLORS;
-      const rgb = hslToRgb(t, 1.0, 0.55);
-      palette[i] = (255<<24) | (rgb[2]<<16) | (rgb[1]<<8) | (rgb[0]);
-    }
-  }
-  function hslToRgb(h, s, l){
-    const a = s*Math.min(l,1-l);
-    const f = n => {
-      const k=(n+ h*12)%12;
-      return l - a*Math.max(-1, Math.min(k-3, Math.min(9-k,1)));
-    };
-    return [f(0),f(8),f(4)].map(v=>Math.round(v*255));
-  }
-  makePalette();
-
-  // Gravity from device, default down
-  let g = {x:0, y:1};
-  let gCal = {x:0, y:0};
-
-  function setGravity(ax, ay){
-    // apply calibration offset
-    const x = ax - gCal.x;
-    const y = ay - gCal.y;
-    const mag = Math.hypot(x,y) || 1;
-    g.x = x/mag; g.y = y/mag;
-  }
-
-  calBtn.addEventListener('click', ()=>{
-    gCal = {...rawG};
-    show('Calibrated');
-  });
-
-  clearBtn.addEventListener('click', ()=>{
-    grid.fill(0); next.fill(0); draw();
-  });
-
-  // Touch input to add sand
-  let brushR = parseInt(brush.value,10);
-  brush.addEventListener('input', ()=> brushR = parseInt(brush.value,10));
-
-  let painting = false;
-  let lastTouches = [];
-
-  function addSand(cx, cy, radius){
-    const cxg = Math.floor(cx / SCALE), cyg = Math.floor(cy / SCALE);
-    const r = Math.max(1, Math.floor(radius / SCALE));
-    const colMode = modeSel.value;
-    for(let y=-r;y<=r;y++){
-      for(let x=-r;x<=r;x++){
-        if(x*x+y*y<=r*r){
-          const gx = cxg + x, gy = cyg + y;
-          if(inb(gx,gy)){
-            let val = 1;
-            if(colMode==='rainbow'){
-              // map to angle so each blob has gradient
-              const angle = Math.atan2(y,x);
-              val = 1 + (Math.floor(((angle+Math.PI)/(2*Math.PI))*MAX_COLORS) % MAX_COLORS);
-            } else if(colMode==='random'){
-              val = 1 + (Math.random()*MAX_COLORS|0);
-            } else { // single
-              val = MAX_COLORS>>1;
+        // --- Particle Class ---
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.radius = PARTICLE_RADIUS * (0.8 + Math.random() * 0.4); // slight size variation
+                this.color = color;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = (Math.random() - 0.5) * 2;
             }
-            grid[idx(gx,gy)] = val;
-          }
+
+            update() {
+                // Apply gravity
+                this.vy += gravity.y;
+                this.vx += gravity.x;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Wall collision detection and response
+                if (this.x + this.radius > canvas.width) {
+                    this.x = canvas.width - this.radius;
+                    this.vx *= -PARTICLE_FRICTION;
+                }
+                if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -PARTICLE_FRICTION;
+                }
+                if (this.y + this.radius > canvas.height) {
+                    this.y = canvas.height - this.radius;
+                    this.vy *= -PARTICLE_FRICTION;
+                }
+                if (this.y - this.radius < 0) {
+                    this.y = this.radius;
+                    this.vy *= -PARTICLE_FRICTION;
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
         }
-      }
-    }
-  }
 
-  canvas.addEventListener('pointerdown', (e)=>{
-    painting = true; lastTouches = [{x:e.clientX*devicePixelRatio, y:e.clientY*devicePixelRatio}];
-    addSand(e.clientX*devicePixelRatio, e.clientY*devicePixelRatio, brushR*devicePixelRatio);
-  });
-  canvas.addEventListener('pointermove', (e)=>{
-    if(!painting) return;
-    const x = e.clientX*devicePixelRatio, y = e.clientY*devicePixelRatio;
-    addSand(x, y, brushR*devicePixelRatio);
-  });
-  window.addEventListener('pointerup', ()=> painting=false);
+        // --- Collision Handling ---
+        function resolveCollisionsForParticle(p1) {
+            const p1col = Math.floor(p1.x / CELL_SIZE);
+            const p1row = Math.floor(p1.y / CELL_SIZE);
 
-  // Gesture helpers
-  let lastTap = 0;
-  canvas.addEventListener('touchstart', (e)=>{
-    if(e.touches.length===2){ grid.fill(0); show('Cleared'); }
-    if(e.touches.length===1){
-      const now = Date.now();
-      if(now - lastTap < 300){ shufflePalette(); show('Colors shuffled'); }
-      lastTap = now;
-    }
-    if(e.touches.length===2){
-      // pinch changes brush
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      canvas.dataset.pinch = Math.hypot(dx,dy);
-    }
-  }, {passive:true});
-  canvas.addEventListener('touchmove', (e)=>{
-    if(e.touches.length===2 && canvas.dataset.pinch){
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const d = Math.hypot(dx,dy);
-      const base = parseFloat(canvas.dataset.pinch);
-      let v = Math.max(1, Math.min(28, Math.round(brushR * d/base)));
-      brushR = v; brush.value = v;
-    }
-  }, {passive:true});
-  canvas.addEventListener('touchend', ()=>{ canvas.dataset.pinch=''; }, {passive:true});
+            // Check current cell and 8 neighbors
+            for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
+                for (let colOffset = -1; colOffset <= 1; colOffset++) {
+                    const checkCol = p1col + colOffset;
+                    const checkRow = p1row + rowOffset;
 
-  function shufflePalette(){
-    // rotate hues a bit
-    const off = Math.random();
-    for(let i=1;i<=MAX_COLORS;i++){
-      const t = (i/MAX_COLORS + off) % 1;
-      const rgb = hslToRgb(t, 1.0, 0.55);
-      palette[i] = (255<<24) | (rgb[2]<<16) | (rgb[1]<<8) | (rgb[0]);
-    }
-  }
+                    if (checkCol >= 0 && checkCol < numCols && checkRow >= 0 && checkRow < numRows) {
+                        const index = checkRow * numCols + checkCol;
+                        for (const p2 of grid[index]) {
+                            if (p1 === p2) continue;
 
-  // Physics step
-  let frameParity = false;
-  function step(){
-    // Map gravity to one of 8 directions
-    const angle = Math.atan2(g.y, g.x); // -PI..PI, x right, y down
-    // convert to 0..2PI with 0 pointing down for intuition
-    let a = angle + Math.PI/2; if(a<0) a += Math.PI*2;
-    const oct = Math.round(a / (Math.PI/4)) % 8;
+                            const dx = p2.x - p1.x;
+                            const dy = p2.y - p1.y;
+                            const distSq = dx * dx + dy * dy;
+                            const radiiSum = p1.radius + p2.radius;
 
-    // Direction vectors for the 8 octants, with primary move and two diagonals
-    const dirs = [
-      {p:[0,1], dl:[-1,1], dr:[1,1]},     // down
-      {p:[1,1], dl:[0,1], dr:[1,0]},      // down-right
-      {p:[1,0], dl:[1,1], dr:[1,-1]},     // right
-      {p:[1,-1], dl:[1,0], dr:[0,-1]},    // up-right
-      {p:[0,-1], dl:[1,-1], dr:[-1,-1]},  // up
-      {p:[-1,-1], dl:[-1,0], dr:[0,-1]},  // up-left
-      {p:[-1,0], dl:[-1,1], dr:[-1,-1]},  // left
-      {p:[-1,1], dl:[0,1], dr:[-1,0]},    // down-left
-    ][oct];
+                            if (distSq < radiiSum * radiiSum) {
+                                const dist = Math.sqrt(distSq);
+                                const overlap = radiiSum - dist;
+                                const angle = Math.atan2(dy, dx);
+                                
+                                const moveX = (overlap / 2) * Math.cos(angle);
+                                const moveY = (overlap / 2) * Math.sin(angle);
 
-    next.set(grid); // copy by default
+                                p1.x -= moveX;
+                                p1.y -= moveY;
+                                p2.x += moveX;
+                                p2.y += moveY;
 
-    // To reduce directional bias, sweep order alternates
-    const xStart = frameParity ? 0 : W-1;
-    const xEnd = frameParity ? W : -1;
-    const xStep = frameParity ? 1 : -1;
-
-    const yStart = frameParity ? H-1 : 0;
-    const yEnd = frameParity ? -1 : H;
-    const yStep = frameParity ? -1 : 1;
-
-    for(let y=yStart; y!==yEnd; y+=yStep){
-      for(let x=xStart; x!==xEnd; x+=xStep){
-        const i = idx(x,y);
-        const v = grid[i];
-        if(v===0) continue;
-        // try primary direction, then diagonals
-        const tryMove = (dx,dy)=>{
-          const nx = x+dx, ny = y+dy;
-          if(!inb(nx,ny)) return false;
-          const ni = idx(nx,ny);
-          if(grid[ni]===0 && next[ni]===grid[i]){ /* already moved something here this tick */ }
-          if(grid[ni]===0 && next[ni]===grid[i]){ /* no-op */ }
-          if(grid[ni]===0 && next[ni]===0){
-            next[ni] = v; next[i] = 0; return true;
-          }
-          return false;
-        };
-        if(tryMove(dirs.p[0], dirs.p[1])) continue;
-        // randomly prefer left or right diagonal to avoid streaks
-        if(Math.random()<0.5){
-          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
-          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
-        } else {
-          if(tryMove(dirs.dr[0], dirs.dr[1])) continue;
-          if(tryMove(dirs.dl[0], dirs.dl[1])) continue;
+                                // Dampen velocities to simulate inelastic collision
+                                p1.vx *= COLLISION_DAMPING;
+                                p1.vy *= COLLISION_DAMPING;
+                                p2.vx *= COLLISION_DAMPING;
+                                p2.vy *= COLLISION_DAMPING;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        // slight horizontal creep along slope
-        if(Math.random()<0.1){
-          if(tryMove(dirs.dr[0], 0)) continue;
-          if(tryMove(dirs.dl[0], 0)) continue;
+
+        // --- Core Functions ---
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            numCols = Math.ceil(canvas.width / CELL_SIZE);
+            numRows = Math.ceil(canvas.height / CELL_SIZE);
+            initParticles();
         }
-      }
-    }
 
-    // swap
-    const tmp = grid; grid = next; next = tmp;
-    frameParity = !frameParity;
-  }
+        function initParticles() {
+            particles = [];
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                // Start particles in a cluster at the top center to let them fall into a pile
+                const x = canvas.width / 2 + (Math.random() - 0.5) * 80;
+                const y = Math.random() * 100;
+                const color = SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)];
+                particles.push(new Particle(x, y, color));
+            }
+        }
 
-  // Render grid to canvas
-  function draw(){
-    if(!img || !pc){ return; }
-    // Write pixels into ImageData via u32 view
-    const buf = new Uint32Array(img.data.buffer);
-    const pal = palette;
-    for(let i=0;i<grid.length;i++){
-      buf[i] = pal[grid[i]] || 0xFF000000; // opaque black for empty
-    }
-    pctx.putImageData(img, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(pc, 0, 0, canvas.width, canvas.height);
-  }
-    const buf = new Uint32Array(img.data.buffer);
-    const pal = palette;
-    for(let i=0;i<grid.length;i++){
-      buf[i] = pal[grid[i]] || 0xFF000000;
-    }
-    // Resize to canvas with nearest-neighbor upscale
-    ctx.putImageData(img, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(canvas, 0,0,W,H, 0,0, canvas.width, canvas.height);
-  }
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Main loop
-  let running = false, rafId = 0;
-  function loop(){
-    step();
-    draw();
-    rafId = requestAnimationFrame(loop);
-  }
+            // Populate the spatial grid for collision optimization
+            grid = Array(numRows * numCols).fill(null).map(() => []);
+            for (const particle of particles) {
+                const col = Math.floor(particle.x / CELL_SIZE);
+                const row = Math.floor(particle.y / CELL_SIZE);
+                if (col >= 0 && col < numCols && row >= 0 && row < numRows) {
+                    const index = row * numCols + col;
+                    grid[index].push(particle);
+                }
+            }
 
-  // Device motion handling
-  let rawG = {x:0,y:1};
+            // Update, check collisions, and draw each particle
+            particles.forEach(p => {
+                resolveCollisionsForParticle(p);
+                p.update();
+                p.draw();
+            });
 
-  async function startSensors(){
-    // Generic Sensor API first
-    if('Accelerometer' in window){
-      try {
-        const sensor = new Accelerometer({frequency:30});
-        sensor.addEventListener('reading', ()=>{
-          rawG.x = sensor.x; rawG.y = sensor.y;
-          // On most devices, +y is down; adjust if needed
-          setGravity(rawG.x, rawG.y);
-        });
-        sensor.start();
-        return true;
-      } catch(e){ console.log('Accelerometer failed', e); }
-    }
+            requestAnimationFrame(animate);
+        }
 
-    // Legacy DeviceMotion
-    if(typeof DeviceMotionEvent !== 'undefined'){
-      // iOS permission
-      if(typeof DeviceMotionEvent.requestPermission === 'function'){
-        const res = await DeviceMotionEvent.requestPermission();
-        if(res !== 'granted') throw new Error('Permission denied');
-      }
-      window.addEventListener('devicemotion', (e)=>{
-        const a = e.accelerationIncludingGravity || e.acceleration || {x:0,y:9.8};
-        // Map to screen coordinates. On many devices y increases toward the top. Flip if needed.
-        rawG.x = a.x||0; rawG.y = a.y||0;
-        setGravity(rawG.x, rawG.y);
-      });
-      return true;
-    }
-    throw new Error('No motion sensors available');
-  }
+        function handleMotionEvent(event) {
+            motionSensorWorking = true;
+            const accel = event.accelerationIncludingGravity;
+            if (accel && accel.x !== null && accel.y !== null) {
+                gravity.x = accel.x * GRAVITY_SENSITIVITY;
+                gravity.y = -accel.y * GRAVITY_SENSITIVITY;
+            }
+        }
 
-  startBtn.addEventListener('click', async ()=>{
-    startBtn.textContent = 'Starting…';
-    try {
-      await startSensors();
-      if(!running){ running = true; loop(); }
-      startBtn.classList.add('run');
-      startBtn.textContent = 'Running';
-      show('Motion enabled');
-    } catch(e){
-      startBtn.textContent = 'Start';
-      show(e.message || 'Failed to start sensors');
-    }
-  });
+        function start() {
+            if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                DeviceMotionEvent.requestPermission()
+                    .then(permissionState => {
+                        if (permissionState === 'granted') {
+                            initializeSimulation();
+                        } else {
+                           errorMessage.textContent = 'Permission denied. Please refresh and grant permission to start.';
+                           errorMessage.classList.remove('hidden');
+                        }
+                    })
+                    .catch((error) => {
+                        console.error(error);
+                        errorMessage.textContent = 'An error occurred while requesting permission.';
+                        errorMessage.classList.remove('hidden');
+                    });
+            } else {
+                initializeSimulation();
+            }
+        }
 
-  // Seed a little sand so the screen is not empty
-  function seed(){
-    for(let i=0;i<6;i++){
-      addSand(rand(0, canvas.width), rand(0, canvas.height/2), rand(20, 60));
-    }
-    draw();
-  }
-  seed();
+        function initializeSimulation() {
+            permissionOverlay.classList.add('hidden');
+            window.addEventListener('devicemotion', handleMotionEvent, true);
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+            animate();
 
-})();
-</script>
+            // Check if the sensor is actually working after a short delay
+            setTimeout(() => {
+                if (!motionSensorWorking) {
+                    permissionOverlay.classList.remove('hidden');
+                    permissionButton.classList.add('hidden');
+                    infoText.textContent = "Could not detect motion sensors. The simulation will use default gravity."
+                    errorMessage.textContent = 'Your device may not have an accelerometer, or your browser requires a secure (https) connection to access it.';
+                    errorMessage.classList.remove('hidden');
+                }
+            }, 1500);
+        }
+
+        // --- Event Listeners ---
+        permissionButton.addEventListener('click', start);
+
+    </script>
 </body>
 </html>
+
