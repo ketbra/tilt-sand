@@ -92,7 +92,13 @@
             <!-- Tap to Add Setting -->
             <div class="flex items-center justify-center pt-2">
                  <input id="tap-to-add-checkbox" type="checkbox" class="h-5 w-5 rounded bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500">
-                 <label for="tap-to-add-checkbox" class="ml-3 font-medium">Enable "Tap to Add"</label>
+                 <label for="tap-to-add-checkbox" class="ml-3 font-medium">Enable Double Tap to Add</label>
+            </div>
+            <!-- Reset Button -->
+            <div class="pt-4">
+                <button id="reset-button" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg text-sm">
+                    Reset to Defaults
+                </button>
             </div>
         </div>
 
@@ -113,6 +119,7 @@
         const permissionButton = document.getElementById('permission-button');
         const infoText = document.getElementById('info-text');
         const errorMessage = document.getElementById('error-message');
+        const resetButton = document.getElementById('reset-button');
         
         // --- Settings Elements ---
         const gravitySlider = document.getElementById('gravity-slider');
@@ -120,22 +127,21 @@
         const sizeSlider = document.getElementById('size-slider');
         const countSlider = document.getElementById('count-slider');
         const tapToAddCheckbox = document.getElementById('tap-to-add-checkbox');
-
         const gravityValue = document.getElementById('gravity-value');
         const bouncinessValue = document.getElementById('bounciness-value');
         const sizeValue = document.getElementById('size-value');
         const countValue = document.getElementById('count-value');
 
-        // --- Configuration ---
-        let NUM_PARTICLES = 4800;
-        let PARTICLE_RADIUS = 5;
-        let PARTICLE_FRICTION = 0.80;
-        let COLLISION_DAMPING = 0.98;
-        let GRAVITY_SENSITIVITY = 0.15;
-        let tapToAddEnabled = false;
+        // --- Default Settings ---
+        const defaultSettings = {
+            gravity: 15, bounciness: 80, size: 5, count: 4800, tapToAdd: false
+        };
 
+        // --- Configuration (will be updated by settings) ---
+        let NUM_PARTICLES, PARTICLE_RADIUS, PARTICLE_FRICTION, COLLISION_DAMPING, GRAVITY_SENSITIVITY, tapToAddEnabled;
+        const DRAG_FORCE = 0.8;
         const SAND_COLORS = ['#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a', '#fefae0', '#dda15e'];
-        let CELL_SIZE = PARTICLE_RADIUS * 2.5;
+        let CELL_SIZE;
 
         // --- State ---
         let particles = [];
@@ -143,8 +149,44 @@
         let motionSensorWorking = false;
         let grid = [];
         let numCols, numRows;
+        let lastTap = 0;
+        let isDragging = false;
+        let lastPointerPos = { x: 0, y: 0 };
+
+        // --- Settings Management ---
+        function applySettingsToUI(settings) {
+            gravitySlider.value = settings.gravity;
+            bouncinessSlider.value = settings.bounciness;
+            sizeSlider.value = settings.size;
+            countSlider.value = settings.count;
+            tapToAddCheckbox.checked = settings.tapToAdd;
+            gravityValue.textContent = (settings.gravity / 100).toFixed(2);
+            bouncinessValue.textContent = (settings.bounciness / 100).toFixed(2);
+            sizeValue.textContent = settings.size;
+            countValue.textContent = settings.count;
+        }
+
+        function saveSettings() {
+            const currentSettings = {
+                gravity: gravitySlider.value, bounciness: bouncinessSlider.value, size: sizeSlider.value,
+                count: countSlider.value, tapToAdd: tapToAddCheckbox.checked
+            };
+            localStorage.setItem('sandSimSettings', JSON.stringify(currentSettings));
+        }
+
+        function loadSettings() {
+            const savedSettings = localStorage.getItem('sandSimSettings');
+            applySettingsToUI(savedSettings ? JSON.parse(savedSettings) : defaultSettings);
+        }
+
+        function resetSettings() {
+            localStorage.removeItem('sandSimSettings');
+            loadSettings();
+        }
 
         // --- Event Listeners for Settings ---
+        window.addEventListener('DOMContentLoaded', loadSettings);
+        resetButton.addEventListener('click', resetSettings);
         gravitySlider.addEventListener('input', () => gravityValue.textContent = (gravitySlider.value / 100).toFixed(2));
         bouncinessSlider.addEventListener('input', () => bouncinessValue.textContent = (bouncinessSlider.value / 100).toFixed(2));
         sizeSlider.addEventListener('input', () => sizeValue.textContent = sizeSlider.value);
@@ -153,57 +195,37 @@
         // --- Particle Class ---
         class Particle {
             constructor(x, y, color, vx = (Math.random() - 0.5) * 2, vy = (Math.random() - 0.5) * 2) {
-                this.x = x;
-                this.y = y;
-                this.radius = PARTICLE_RADIUS * (0.8 + Math.random() * 0.4);
-                this.color = color;
-                this.vx = vx;
-                this.vy = vy;
+                this.x = x; this.y = y; this.radius = PARTICLE_RADIUS * (0.8 + Math.random() * 0.4);
+                this.color = color; this.vx = vx; this.vy = vy;
             }
-
             update() {
-                this.vy += gravity.y;
-                this.vx += gravity.x;
-                this.x += this.vx;
-                this.y += this.vy;
-
+                this.vy += gravity.y; this.vx += gravity.x; this.x += this.vx; this.y += this.vy;
                 if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx *= -PARTICLE_FRICTION; }
                 if (this.x - this.radius < 0) { this.x = this.radius; this.vx *= -PARTICLE_FRICTION; }
                 if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy *= -PARTICLE_FRICTION; }
                 if (this.y - this.radius < 0) { this.y = this.radius; this.vy *= -PARTICLE_FRICTION; }
             }
-
             draw() {
-                ctx.beginPath();
-                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-                ctx.fillStyle = this.color;
-                ctx.fill();
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color; ctx.fill();
             }
         }
 
         // --- Collision Handling ---
         function resolveCollisionsForParticle(p1) {
-            const p1col = Math.floor(p1.x / CELL_SIZE);
-            const p1row = Math.floor(p1.y / CELL_SIZE);
+            const p1col = Math.floor(p1.x / CELL_SIZE), p1row = Math.floor(p1.y / CELL_SIZE);
             for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
                 for (let colOffset = -1; colOffset <= 1; colOffset++) {
-                    const checkCol = p1col + colOffset;
-                    const checkRow = p1row + rowOffset;
+                    const checkCol = p1col + colOffset, checkRow = p1row + rowOffset;
                     if (checkCol >= 0 && checkCol < numCols && checkRow >= 0 && checkRow < numRows) {
-                        const index = checkRow * numCols + checkCol;
-                        for (const p2 of grid[index]) {
+                        for (const p2 of grid[checkRow * numCols + checkCol]) {
                             if (p1 === p2) continue;
-                            const dx = p2.x - p1.x;
-                            const dy = p2.y - p1.y;
-                            const distSq = dx * dx + dy * dy;
+                            const dx = p2.x - p1.x, dy = p2.y - p1.y, distSq = dx * dx + dy * dy;
                             const radiiSum = p1.radius + p2.radius;
                             if (distSq < radiiSum * radiiSum && distSq > 0) {
-                                const dist = Math.sqrt(distSq);
-                                const overlap = (radiiSum - dist) / dist;
-                                const moveX = dx * 0.5 * overlap;
-                                const moveY = dy * 0.5 * overlap;
-                                p1.x -= moveX; p1.y -= moveY;
-                                p2.x += moveX; p2.y += moveY;
+                                const dist = Math.sqrt(distSq), overlap = (radiiSum - dist) / dist;
+                                const moveX = dx * 0.5 * overlap, moveY = dy * 0.5 * overlap;
+                                p1.x -= moveX; p1.y -= moveY; p2.x += moveX; p2.y += moveY;
                                 p1.vx *= COLLISION_DAMPING; p1.vy *= COLLISION_DAMPING;
                                 p2.vx *= COLLISION_DAMPING; p2.vy *= COLLISION_DAMPING;
                             }
@@ -215,104 +237,108 @@
 
         // --- Core Functions ---
         function resizeCanvas() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            numCols = Math.ceil(canvas.width / CELL_SIZE);
-            numRows = Math.ceil(canvas.height / CELL_SIZE);
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            numCols = Math.ceil(canvas.width / CELL_SIZE); numRows = Math.ceil(canvas.height / CELL_SIZE);
             initParticles();
         }
 
         function initParticles() {
             particles = [];
             for (let i = 0; i < NUM_PARTICLES; i++) {
-                const x = canvas.width / 2 + (Math.random() - 0.5) * 80;
-                const y = Math.random() * 100;
-                const color = SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)];
-                particles.push(new Particle(x, y, color));
+                const x = canvas.width / 2 + (Math.random() - 0.5) * 80, y = Math.random() * 100;
+                particles.push(new Particle(x, y, SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)]));
             }
         }
 
         function addParticlesAt(x, y) {
             const clumpSize = 20 + Math.random() * 30;
             for(let i=0; i < clumpSize; i++) {
-                const angle = Math.random() * Math.PI * 2;
-                const speed = Math.random() * 4;
-                const vx = Math.cos(angle) * speed;
-                const vy = Math.sin(angle) * speed;
-                const color = SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)];
-                particles.push(new Particle(x, y, color, vx, vy));
+                const angle = Math.random() * Math.PI * 2, speed = Math.random() * 4;
+                particles.push(new Particle(x, y, SAND_COLORS[Math.floor(Math.random() * SAND_COLORS.length)], Math.cos(angle) * speed, Math.sin(angle) * speed));
             }
         }
 
         function animate() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             grid = Array(numRows * numCols).fill(null).map(() => []);
-            for (const particle of particles) {
-                const col = Math.floor(particle.x / CELL_SIZE);
-                const row = Math.floor(particle.y / CELL_SIZE);
-                if (col >= 0 && col < numCols && row >= 0 && row < numRows) {
-                    grid[row * numCols + col].push(particle);
-                }
+            for (const p of particles) {
+                const col = Math.floor(p.x / CELL_SIZE), row = Math.floor(p.y / CELL_SIZE);
+                if (col >= 0 && col < numCols && row >= 0 && row < numRows) grid[row * numCols + col].push(p);
             }
             particles.forEach(p => { resolveCollisionsForParticle(p); p.update(); p.draw(); });
             requestAnimationFrame(animate);
         }
 
+        // --- Event Handlers ---
+        function handlePointerDown(e) {
+            isDragging = true; lastPointerPos = { x: e.clientX, y: e.clientY };
+            if (tapToAddEnabled) {
+                const now = Date.now(), timeSince = now - lastTap;
+                if (timeSince < 300 && timeSince > 0) {
+                    addParticlesAt(e.clientX, e.clientY); isDragging = false;
+                }
+                lastTap = now;
+            }
+        }
+
+        function handlePointerMove(e) {
+            if (!isDragging) return;
+            const dx = e.clientX - lastPointerPos.x, dy = e.clientY - lastPointerPos.y;
+            const col = Math.floor(e.clientX / CELL_SIZE), row = Math.floor(e.clientY / CELL_SIZE);
+            for (let rOff = -1; rOff <= 1; rOff++) for (let cOff = -1; cOff <= 1; cOff++) {
+                const c = col + cOff, r = row + rOff;
+                if (c >= 0 && c < numCols && r >= 0 && r < numRows) for (const p of grid[r * numCols + c]) {
+                    const p_dx = p.x - e.clientX, p_dy = p.y - e.clientY;
+                    if (p_dx * p_dx + p_dy * p_dy < 900) { p.vx += dx * DRAG_FORCE; p.vy += dy * DRAG_FORCE; } // 30px radius
+                }
+            }
+            lastPointerPos = { x: e.clientX, y: e.clientY };
+        }
+
+        function handlePointerUp() { isDragging = false; }
+
         function handleMotionEvent(event) {
             motionSensorWorking = true;
             const accel = event.accelerationIncludingGravity;
             if (accel && accel.x !== null && accel.y !== null) {
-                gravity.x = -accel.x * GRAVITY_SENSITIVITY;
-                gravity.y = accel.y * GRAVITY_SENSITIVITY;
+                gravity.x = -accel.x * GRAVITY_SENSITIVITY; gravity.y = accel.y * GRAVITY_SENSITIVITY;
             }
         }
 
         function start() {
-            // Apply settings from sliders
+            saveSettings();
             GRAVITY_SENSITIVITY = parseFloat(gravitySlider.value) / 100;
             const bounciness = parseFloat(bouncinessSlider.value) / 100;
-            PARTICLE_FRICTION = bounciness;
-            COLLISION_DAMPING = 0.90 + (bounciness * 0.09); // Map to stable range
-            PARTICLE_RADIUS = parseInt(sizeSlider.value, 10);
-            NUM_PARTICLES = parseInt(countSlider.value, 10);
-            tapToAddEnabled = tapToAddCheckbox.checked;
-            CELL_SIZE = PARTICLE_RADIUS * 2.5;
+            PARTICLE_FRICTION = bounciness; COLLISION_DAMPING = 0.90 + (bounciness * 0.09);
+            PARTICLE_RADIUS = parseInt(sizeSlider.value, 10); NUM_PARTICLES = parseInt(countSlider.value, 10);
+            tapToAddEnabled = tapToAddCheckbox.checked; CELL_SIZE = PARTICLE_RADIUS * 2.5;
 
             if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
                 DeviceMotionEvent.requestPermission().then(state => {
                     if (state === 'granted') initializeSimulation();
                     else { errorMessage.textContent = 'Permission denied.'; errorMessage.classList.remove('hidden'); }
-                }).catch(err => {
-                    console.error(err);
-                    errorMessage.textContent = 'Error requesting permission.';
-                    errorMessage.classList.remove('hidden');
-                });
-            } else {
-                initializeSimulation();
-            }
+                }).catch(err => { console.error(err); errorMessage.textContent = 'Error requesting permission.'; errorMessage.classList.remove('hidden'); });
+            } else { initializeSimulation(); }
         }
 
         function initializeSimulation() {
             permissionOverlay.classList.add('hidden');
-            if (tapToAddEnabled) {
-                canvas.addEventListener('pointerdown', (e) => addParticlesAt(e.clientX, e.clientY));
-            }
+            canvas.addEventListener('pointerdown', handlePointerDown);
+            canvas.addEventListener('pointermove', handlePointerMove);
+            canvas.addEventListener('pointerup', handlePointerUp);
+            canvas.addEventListener('pointerleave', handlePointerUp);
             window.addEventListener('devicemotion', handleMotionEvent, true);
             window.addEventListener('resize', resizeCanvas);
-            resizeCanvas();
-            animate();
-
+            resizeCanvas(); animate();
             setTimeout(() => {
                 if (!motionSensorWorking) {
-                    permissionOverlay.classList.remove('hidden');
-                    permissionButton.classList.add('hidden');
-                    infoText.textContent = "Could not detect motion sensors. The simulation will use default gravity."
-                    errorMessage.textContent = 'Your device may not have an accelerometer, or requires a secure (https) connection.';
+                    permissionOverlay.classList.remove('hidden'); permissionButton.classList.add('hidden');
+                    infoText.textContent = "Could not detect motion sensors. Default gravity will be used."
+                    errorMessage.textContent = 'Your device may lack an accelerometer or require a secure (https) connection.';
                     errorMessage.classList.remove('hidden');
                 }
             }, 1500);
         }
-
         permissionButton.addEventListener('click', start);
     </script>
 </body>
