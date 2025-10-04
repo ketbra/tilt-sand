@@ -43,16 +43,16 @@
 
         // --- Configuration ---
         const NUM_PARTICLES = 1200;
-        const PARTICLE_RADIUS = 3;
+        const PARTICLE_RADIUS = 5; // Increased particle size
         const PARTICLE_FRICTION = 0.80; // How much velocity is lost on wall bounce
         const COLLISION_DAMPING = 0.98; // Energy kept after particle collision
-        const GRAVITY_SENSITIVITY = 0.35; // How strongly the accelerometer affects gravity
+        const GRAVITY_SENSITIVITY = 0.15; // Lowered gravity effect
         const SAND_COLORS = ['#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a', '#fefae0', '#dda15e'];
         const CELL_SIZE = PARTICLE_RADIUS * 2.5; // For collision optimization grid
 
         // --- State ---
         let particles = [];
-        let gravity = { x: 0, y: 1 };
+        let gravity = { x: 0, y: 0.4 }; // Lowered default gravity
         let motionSensorWorking = false;
         let grid = [];
         let numCols, numRows;
@@ -198,8 +198,10 @@
             motionSensorWorking = true;
             const accel = event.accelerationIncludingGravity;
             if (accel && accel.x !== null && accel.y !== null) {
+                // The y-axis interpretation can vary between devices.
+                // Removed the negative sign to correct the gravity direction for devices where it was inverted.
                 gravity.x = accel.x * GRAVITY_SENSITIVITY;
-                gravity.y = -accel.y * GRAVITY_SENSITIVITY;
+                gravity.y = accel.y * GRAVITY_SENSITIVITY;
             }
         }
 
