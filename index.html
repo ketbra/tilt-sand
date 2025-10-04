@@ -73,6 +73,14 @@
                 </div>
                 <input id="bounciness-slider" type="range" min="0" max="100" value="80">
             </div>
+            <!-- Damping Setting -->
+            <div class="setting-item">
+                <div class="flex justify-between items-center mb-1">
+                    <label for="damping-slider" class="font-medium">Damping</label>
+                    <span id="damping-value" class="text-sm text-indigo-300">0.990</span>
+                </div>
+                <input id="damping-slider" type="range" min="950" max="1000" value="990">
+            </div>
              <!-- Particle Size Setting -->
              <div class="setting-item">
                 <div class="flex justify-between items-center mb-1">
@@ -124,21 +132,23 @@
         // --- Settings Elements ---
         const gravitySlider = document.getElementById('gravity-slider');
         const bouncinessSlider = document.getElementById('bounciness-slider');
+        const dampingSlider = document.getElementById('damping-slider');
         const sizeSlider = document.getElementById('size-slider');
         const countSlider = document.getElementById('count-slider');
         const tapToAddCheckbox = document.getElementById('tap-to-add-checkbox');
         const gravityValue = document.getElementById('gravity-value');
         const bouncinessValue = document.getElementById('bounciness-value');
+        const dampingValue = document.getElementById('damping-value');
         const sizeValue = document.getElementById('size-value');
         const countValue = document.getElementById('count-value');
 
         // --- Default Settings ---
         const defaultSettings = {
-            gravity: 15, bounciness: 80, size: 5, count: 4800, tapToAdd: false
+            gravity: 10, bounciness: 60, damping: 990, size: 5, count: 4800, tapToAdd: false
         };
 
         // --- Configuration (will be updated by settings) ---
-        let NUM_PARTICLES, PARTICLE_RADIUS, PARTICLE_FRICTION, COLLISION_DAMPING, GRAVITY_SENSITIVITY, tapToAddEnabled;
+        let NUM_PARTICLES, PARTICLE_RADIUS, PARTICLE_FRICTION, COLLISION_DAMPING, GRAVITY_SENSITIVITY, tapToAddEnabled, VELOCITY_DECAY;
         const DRAG_FORCE = 0.8;
         const SAND_COLORS = ['#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a', '#fefae0', '#dda15e'];
         let CELL_SIZE;
@@ -157,18 +167,20 @@
         function applySettingsToUI(settings) {
             gravitySlider.value = settings.gravity;
             bouncinessSlider.value = settings.bounciness;
+            dampingSlider.value = settings.damping;
             sizeSlider.value = settings.size;
             countSlider.value = settings.count;
             tapToAddCheckbox.checked = settings.tapToAdd;
             gravityValue.textContent = (settings.gravity / 100).toFixed(2);
             bouncinessValue.textContent = (settings.bounciness / 100).toFixed(2);
+            dampingValue.textContent = (settings.damping / 1000).toFixed(3);
             sizeValue.textContent = settings.size;
             countValue.textContent = settings.count;
         }
 
         function saveSettings() {
             const currentSettings = {
-                gravity: gravitySlider.value, bounciness: bouncinessSlider.value, size: sizeSlider.value,
+                gravity: gravitySlider.value, bounciness: bouncinessSlider.value, damping: dampingSlider.value, size: sizeSlider.value,
                 count: countSlider.value, tapToAdd: tapToAddCheckbox.checked
             };
             localStorage.setItem('sandSimSettings', JSON.stringify(currentSettings));
@@ -189,6 +201,7 @@
         resetButton.addEventListener('click', resetSettings);
         gravitySlider.addEventListener('input', () => gravityValue.textContent = (gravitySlider.value / 100).toFixed(2));
         bouncinessSlider.addEventListener('input', () => bouncinessValue.textContent = (bouncinessSlider.value / 100).toFixed(2));
+        dampingSlider.addEventListener('input', () => dampingValue.textContent = (dampingSlider.value / 1000).toFixed(3));
         sizeSlider.addEventListener('input', () => sizeValue.textContent = sizeSlider.value);
         countSlider.addEventListener('input', () => countValue.textContent = countSlider.value);
 
@@ -199,6 +212,10 @@
                 this.color = color; this.vx = vx; this.vy = vy;
             }
             update() {
+                // Apply velocity decay (damping)
+                this.vx *= VELOCITY_DECAY;
+                this.vy *= VELOCITY_DECAY;
+
                 this.vy += gravity.y; this.vx += gravity.x; this.x += this.vx; this.y += this.vy;
                 if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx *= -PARTICLE_FRICTION; }
                 if (this.x - this.radius < 0) { this.x = this.radius; this.vx *= -PARTICLE_FRICTION; }
@@ -309,6 +326,7 @@
             saveSettings();
             GRAVITY_SENSITIVITY = parseFloat(gravitySlider.value) / 100;
             const bounciness = parseFloat(bouncinessSlider.value) / 100;
+            VELOCITY_DECAY = parseFloat(dampingSlider.value) / 1000;
             PARTICLE_FRICTION = bounciness; COLLISION_DAMPING = 0.90 + (bounciness * 0.09);
             PARTICLE_RADIUS = parseInt(sizeSlider.value, 10); NUM_PARTICLES = parseInt(countSlider.value, 10);
             tapToAddEnabled = tapToAddCheckbox.checked; CELL_SIZE = PARTICLE_RADIUS * 2.5;
